@@ -1,0 +1,811 @@
+---
+title: "DATA ANALYSIS"
+author: "XIA ZIYI"
+date: "2025-09-21"
+output:
+  word_document: default
+  html_document:
+    df_print: paged
+  pdf_document:
+    latex_engine: xelatex
+mainfont: Times New Roman
+CJKmainfont: Microsoft YaHei
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Step 1. Data import and preliminary inspection
+library(tibble)
+library(readxl)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(corrplot)
+library(psych)
+library(car)
+library(broom)
+library(knitr)
+library(seminr)
+library(tidyr)
+library(lmtest)
+library(sandwich)
+library(purrr)
+
+# Import data
+df <- read_xlsx("D:/Data.xlsx", na = c("", " "))
+# View data structure
+str(df)
+# View the first few rows of data
+head(df)
+# View descriptive statistics
+summary(df)
+# Check for missing values 
+colSums(is.na(df))
+# Check the number of unique values in each column
+sapply(df, function(x) length(unique(x)))
+```
+
+
+
+```{r}
+# Step 2. Data cleaning
+# 2.1 Live_date to date type：Live_date
+df <- df %>%
+  mutate(
+    Live_date = dmy(Live_date, quiet = TRUE))
+
+# 2.2 Chinese → English Mapping: Business Type & Live Streaming Room
+Main_business_type_map <- c(
+  "美妆护肤"   = "Beauty & Skincare",
+  "日用百货"   = "Daily Necessities",
+  "服饰内衣"       = "Clothing",
+  "母婴用品"   = "Maternal & Baby Products",
+  "医药保健"   = "Healthcare",
+  "宠物用品"   = "Pet Products"
+)
+
+streamer_map <- c(
+  "韩束官方旗舰店红蛮腰" = "Hanshu_Official",
+  "宋潇·美颂生物董事长" = "Songxiao_Meisong", 
+  "原生密码官方旗舰店" = "Yuanshengmima_Official",
+  "养肤堂杨姐-草本祛斑" = "Yangfutang_Herbal",
+  "心相印家居日用旗舰店" = "Xinxiangyin_Household",
+  "自由点官方旗舰店" = "Ziyoudian_Official",
+  "宝儿家深圳高端女装" = "Baoerjia_Fashion",
+  "MRHALA" = "MRHALA",
+  "老谭私服" = "Laotan_Custom",
+  "小壳妈咪" = "Xiaoke_Mom",
+  "袋鼠妈妈官方旗舰店" = "Daishumama_Official",
+  "inne母婴官方旗舰店" = "INNE_Maternal",
+  "万益蓝WONDERLAB营养食品旗舰店" = "Wonderlab_Nutrition",
+  "奥运营养师吕爸【儿童成长】" = "Lv_Nutritionist",
+  "清华冯博士-儿童营养研发专家" = "DrFeng_Nutrition",
+  "诚实一口官方旗舰店" = "Chengshiyikou_Pet",
+  "蓝氏官方旗舰店" = "Lanshi_Pet",
+  "叨乐上班了" = "Daole_Pet"
+)
+
+df <- df %>%
+  mutate(
+    Main_business_type_en = unname(replace(Main_business_type,
+                                           Main_business_type %in% names(Main_business_type_map),
+                                           Main_business_type_map[Main_business_type[Main_business_type %in% names(Main_business_type_map)]])),
+    Main_business_type_en = ifelse(is.na(Main_business_type_en) | Main_business_type_en == "",
+                                   Main_business_type, Main_business_type_en),
+
+    # Live room name (English): Priority mapping; Unmapped automatic number
+    Streamer_name_en = ifelse(Streamer_name %in% names(streamer_map),
+                              streamer_map[Streamer_name],
+                              paste0("Streamer_", as.integer(factor(Streamer_name))))
+  ) %>%
+  
+  # Factorization: Business Type
+  mutate(
+    Main_business_type = factor(Main_business_type_en, ordered = FALSE),
+    Streamer_name      = Streamer_name_en
+  ) %>%
+  select(-Main_business_type_en, -Streamer_name_en)
+
+# 2.3 Missing value handling
+# Handling missing UV_value_upper_limit values by replacing the missing upper limit with the lower limit
+df <- df %>%
+  mutate(
+    UV_value_upper_limit = ifelse(is.na(UV_value_upper_limit),
+                                  UV_value_lower_limit,
+                                  UV_value_upper_limit)
+  )
+
+# Handling missing values in Penetration_rate: Replace the upper limit missing value with the lower limit value
+df <- df %>%
+  mutate(
+    Penetration_rate_upper_limit = ifelse(is.na(Penetration_rate_upper_limit),
+                                          Penetration_rate_lower_limit,
+                                          Penetration_rate_upper_limit)
+  )
+
+# 2.4 The midpoint method for interval data generates the *_mid variable
+df <- df %>%
+  mutate(
+    GMV_mid                    = (GMV_lower_limit + GMV_upper_limit)/2,
+    Total_sales_volume_mid     = (Total_sales_volume_lower_limit + Total_sales_volume_upper_limit)/2,
+    AOV_mid                    = (Average_order_value_lower_limit + Average_order_value_upper_limit)/2,
+    UV_value_mid               = (UV_value_lower_limit + UV_value_upper_limit)/2,
+    Penetration_rate_mid       = (Penetration_rate_lower_limit + Penetration_rate_upper_limit)/2,
+    Conversion_rate_mid        = (Conversion_rate_lower_limit + Conversion_rate_upper_limit)/2,
+    Main_age_group_mid         = (Main_age_group_lower_limit + Main_age_group_upper_limit)/2
+    )
+
+# 2.5 Gender ratio: Keep only Female_ratio, delete Male_ratio
+df <- df %>%
+  select(-Male_ratio)
+
+# 2.6 Check (Main_business_type is the factor; Streamer_name is the character ID)
+str(df)
+summary(select(df, ends_with("_mid")))
+colSums(is.na(df))
+
+# 2.7 Hard error checking
+bad_rows <- df %>%
+  filter(
+    Total_sales_volume_mid < 0 | GMV_mid < 0 | AOV_mid < 0 | UV_value_mid < 0 |
+    Exposure < 0 | Viewers < 0 | Likes < 0 | Comments < 0 | Fans_count < 0 |
+    Product_count < 0 | Live_duration_hour <= 0 |
+    Female_ratio < 0 | Female_ratio > 1 |
+    Proportion_of_main_business_category < 0 | Proportion_of_main_business_category > 1 |
+    Penetration_rate_mid < 0 | Penetration_rate_mid > 1 |
+    Conversion_rate_mid < 0 | Conversion_rate_mid > 1 |
+    Main_age_group_proportion < 0 | Main_age_group_proportion > 1
+  )
+
+if (nrow(bad_rows) > 0) {
+  print(bad_rows)
+  stop("Found hard logic errors in the dataset.")
+} else {
+  message("Step 2 check passed: no hard logic errors.")
+}
+
+# 2.8 Transformation for skewed variables (log1p) 
+# Transformation of right-skewed variables with large numerical magnitudes
+log_vars <- c(
+  "Fans_count",
+  "Viewers",
+  "Exposure",
+  "Likes",
+  "Comments",
+  "GMV_mid",
+  "Total_sales_volume_mid",
+  "AOV_mid"
+)
+
+# Only process variables that exist in the data
+log_vars <- intersect(log_vars, names(df))
+
+df <- df %>%
+  mutate(
+    across(
+      all_of(log_vars),
+      ~ log1p(.),                 # log1p(x) = log(1 + x)
+      .names = "{.col}_log"
+    )
+  )
+
+# Print descriptive statistics
+message("Log-transformed variables summary:")
+print(summary(select(df, ends_with("_log"))))
+```
+
+
+```{r}
+# Step 3. Descriptive Analysis
+# 3.1 Define the core set of variables (based on the research framework)
+traffic_vars        <- c("Fans_count","Viewers","Exposure")
+interactivity_vars  <- c("Likes","Comments")
+attractiveness_vars <- c("Penetration_rate_mid","UV_value_mid")
+value_vars          <- c("AOV_mid","Proportion_of_main_business_category")
+outcome_vars        <- c("GMV_mid","Total_sales_volume_mid","Conversion_rate_mid")
+
+core_num_vars <- unique(c(traffic_vars, interactivity_vars, attractiveness_vars,
+                          value_vars, outcome_vars))
+num_df <- df %>% select(any_of(core_num_vars))
+
+# 3.2 Descriptive statistics table (numerical variables) 
+desc_fun <- function(x){
+  x <- as.numeric(x)
+  c(
+    n       = sum(!is.na(x)),
+    mean    = mean(x, na.rm = TRUE),
+    sd      = sd(x, na.rm = TRUE),
+    min     = min(x, na.rm = TRUE),
+    q25     = quantile(x, 0.25, na.rm = TRUE),
+    median  = median(x, na.rm = TRUE),
+    q75     = quantile(x, 0.75, na.rm = TRUE),
+    max     = max(x, na.rm = TRUE)
+  )
+}
+desc_tbl <- t(sapply(num_df, desc_fun)) %>% as.data.frame() %>% round(3)
+print(desc_tbl)
+
+# Categorical variable distribution
+print(table(df$Main_business_type))
+
+# 3.3 Visualization: Histogram
+for(v in core_num_vars){
+  p <- ggplot(df, aes(x = .data[[v]])) +
+    geom_histogram(bins = 30, fill = "steelblue", color = "white") +
+    labs(title = paste("Histogram -", v), x = v, y = "Count") +
+    theme_minimal()
+  print(p)
+}
+
+# 3.4 Group comparison: Purchase results of different product categories
+# Box plot (GMV, sales volume, conversion rate by Main_business_type)
+for(v in outcome_vars){
+  p <- ggplot(df, aes(x = Main_business_type, y = .data[[v]])) +
+    geom_boxplot(outlier.alpha = 0.4, fill = "lightblue") +
+    labs(title = paste("Boxplot by Main_business_type -", v),
+         x = "Main_business_type", y = v) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1))
+  print(p)
+}
+
+# 3.5 Correlation analysis: Correlation among core variables
+cor_mat <- suppressWarnings(cor(num_df, use = "pairwise.complete.obs", method = "pearson"))
+print(round(cor_mat, 3))
+
+# Relevance matrix heatmap
+corrplot(cor_mat, type = "upper", order = "hclust",
+         tl.col = "black", tl.srt = 45, tl.cex = 0.7)
+```
+
+
+# Step 4. H1
+```{r}
+# 4.1 PCA for Traffic Quality Index 
+# 4.1.1 Retrieve PCA input variables
+traffic_vars_for_pca <- df %>%
+  select(Fans_count_log, Viewers_log, Exposure_log)
+
+# 4.1.2 Record which lines are complete
+idx_complete <- complete.cases(traffic_vars_for_pca)
+
+# 4.1.3 Run PCA with the full line
+pca_res <- principal(
+  traffic_vars_for_pca[idx_complete, ],
+  nfactors = 1,
+  rotate = "none",
+  scores = TRUE
+)
+
+print(pca_res)
+
+# 4.1.4 Write TrafficIndex back to df using the original line numbers 
+df$TrafficIndex <- NA_real_
+df$TrafficIndex[idx_complete] <- pca_res$scores[, 1]
+```
+
+```{r}
+# 4.2 Check after adding TrafficIndex to df
+summary(df$TrafficIndex)
+hist(df$TrafficIndex, main = "Histogram of TrafficIndex", col = "lightblue")
+
+# 4.3 Make sure it is a factor
+df$Main_business_type <- factor(df$Main_business_type)
+```
+
+
+
+```{r}
+# 4.4 Construct three regression models for H1
+# 4.4.1 Regression: TrafficIndex → GMV
+model_gmv <- lm(
+  GMV_mid_log ~ TrafficIndex + Main_business_type,
+  data = df
+)
+summary(model_gmv)
+
+# 4.4.2 Regression: TrafficIndex → Sales Volume
+model_volume <- lm(
+  Total_sales_volume_mid_log ~ TrafficIndex + Main_business_type,
+  data = df
+)
+summary(model_volume)
+
+# 4.4.3 Regression: TrafficIndex → Conversion Rate
+model_conversion <- lm(
+  Conversion_rate_mid ~ TrafficIndex + Main_business_type,
+  data = df
+)
+summary(model_conversion)
+```
+
+
+```{r}
+# 4.5 VIF diagnostics
+vif(model_gmv)
+vif(model_volume)
+vif(model_conversion)
+
+# 4.6 Neat regression tables
+kable(tidy(model_gmv), digits = 4, caption = "Regression Results: Traffic → GMV")
+kable(tidy(model_volume), digits = 4, caption = "Regression Results: Traffic → Sales Volume")
+kable(tidy(model_conversion), digits = 4, caption = "Regression Results: Traffic → Conversion Rate")
+```
+
+
+
+```{r}
+# 4.7 Regression diagnostics: Heteroskedasticity and Autocorrelation Tests
+diag_lm_min <- function(m, model_name="model", show_plot=TRUE){
+  cat("\n==============================\n")
+  cat("Diagnostics for:", model_name, "\n")
+  cat("==============================\n")
+
+  # graph for homoscedasticity
+  if(show_plot){
+    df_plot <- data.frame(fitted=fitted(m), resid=resid(m))
+    print(
+      ggplot(df_plot, aes(fitted, resid)) +
+        geom_point(alpha=0.6) +
+        geom_hline(yintercept=0, linetype="dashed") +
+        labs(title=paste0(model_name, ": Residuals vs Fitted"),
+             x="Fitted values", y="Residuals") +
+        theme_minimal()
+    )
+  }
+
+  # 1) Homoscedasticity test
+  cat("\nBreusch-Pagan test (H0: homoscedasticity)\n")
+  print(bptest(m))
+
+  # 2) Autocorrelation test
+  cat("\nDurbin-Watson test (H0: no first-order autocorrelation)\n")
+  print(dwtest(m))
+}
+
+diag_lm_min(model_gmv, "H1_GMV")
+diag_lm_min(model_volume, "H1_SalesVolume")
+diag_lm_min(model_conversion, "H1_ConversionRate")
+```
+
+
+```{r}
+# 4.8 checking
+# Influence diagnostics
+par(mfrow=c(1,1))
+plot(model_gmv, which = 4)  # Cook's distance
+plot(model_gmv, which = 5)  # Residuals vs Leverage
+
+# List the top influence points
+cooks <- cooks.distance(model_gmv)
+which(cooks > 4/length(cooks))
+```
+
+
+
+```{r}
+# Step 4.9 HC robust SE for cross-sectional regression
+# Robust SE for H1: Traffic → GMV (HC3)
+robust_gmv <- coeftest(
+  model_gmv,
+  vcov = vcovHC(model_gmv, type = "HC3")
+)
+print(robust_gmv)
+
+kable(
+  tidy(robust_gmv),
+  digits = 4,
+  caption = "H1 Regression with HC3 Robust SE: Traffic → GMV"
+)
+
+# Robust SE for H1: Traffic → Sales Volume (HC3)
+robust_volume <- coeftest(
+  model_volume,
+  vcov = vcovHC(model_volume, type = "HC3")
+)
+print(robust_volume)
+
+kable(
+  tidy(robust_volume),
+  digits = 4,
+  caption = "H1 Regression with HC3 Robust SE: Traffic → Sales Volume"
+)
+
+# Robust SE for H1: Traffic → Conversion Rate (HC3)
+robust_conversion <- coeftest(
+  model_conversion,
+  vcov = vcovHC(model_conversion, type = "HC3")
+)
+print(robust_conversion)
+
+kable(
+  tidy(robust_conversion),
+  digits = 4,
+  caption = "H1 Regression with HC3 Robust SE: Traffic → Conversion Rate"
+)
+```
+
+
+```{r}
+# 4.10 Cluster-robust SE by streamer (accounts for repeated sessions per streamer)
+vc_gmv_clu <- vcovCL(model_gmv, cluster = df$Streamer_name, type = "HC3")
+coeftest(model_gmv, vcov = vc_gmv_clu)
+
+vc_vol_clu <- vcovCL(model_volume, cluster = df$Streamer_name, type = "HC3")
+coeftest(model_volume, vcov = vc_vol_clu)
+
+vc_conv_clu <- vcovCL(model_conversion, cluster = df$Streamer_name, type = "HC3")
+coeftest(model_conversion, vcov = vc_conv_clu)
+
+```
+
+
+# Step 5. H2
+```{r}
+# 5.1 Prepare a subset of data for H2 
+df_h2 <- df %>%
+  select(
+    # Traffic Quality
+    Fans_count_log,
+    Viewers_log,
+    Exposure_log,
+    
+    # Perceived Interactivity
+    Likes_log,
+    Comments_log,
+    
+    # Perceived Attractiveness
+    Penetration_rate_mid,
+    UV_value_mid,
+    
+    # Perceived Value
+    AOV_mid_log,
+    Proportion_of_main_business_category,
+    
+    # Outcome: GMV
+    GMV_mid_log
+  )
+
+str(df_h2)
+
+df_h2 <- na.omit(df_h2)
+cat("H2 sample size after NA omit:", nrow(df_h2), "\n")
+```
+
+
+```{r}
+# 5.2 Establish measurement models (all composite, formative)
+mm_h2 <- constructs(
+  # Traffic Quality
+  composite("Traffic",
+            c(
+              single_item("Fans_count_log"),
+              single_item("Viewers_log"),
+              single_item("Exposure_log")
+            ),
+            weights = mode_B),
+  
+  # Perceived Interactivity
+  composite("Interactivity",
+            c(
+              single_item("Likes_log"),
+              single_item("Comments_log")
+            ),
+            weights = mode_B),
+  
+  # Perceived Attractiveness
+  composite("Attractiveness",
+            c(
+              single_item("Penetration_rate_mid"),
+              single_item("UV_value_mid")
+            ),
+            weights = mode_B),
+  
+  # Perceived Value
+  composite("Value",
+            c(
+              single_item("AOV_mid_log"),
+              single_item("Proportion_of_main_business_category")
+            ),
+            weights = mode_B),
+  
+  # Purchase Outcome: GMV
+  composite("GMV",
+            single_item("GMV_mid_log"),
+            weights = mode_A)
+)
+```
+
+
+```{r}
+# 5.3 Establish a structural model
+sm_h2 <- relationships(
+  paths(from = "Traffic",
+        to   = c("Interactivity", "Attractiveness", "Value", "GMV")),
+  
+  paths(from = c("Interactivity", "Attractiveness", "Value"),
+        to   = "GMV")
+)
+```
+
+
+```{r}
+# 5.4 Estimating the PLS-SEM model + Bootstrap
+pls_h2 <- estimate_pls(
+  data             = df_h2,
+  measurement_model = mm_h2,
+  structural_model  = sm_h2
+)
+
+summary(pls_h2)
+
+# Bootstrap is used for significance testing
+boot_h2 <- bootstrap_model(
+  seminr_model = pls_h2,
+  nboot        = 5000,
+  cores        = parallel::detectCores() - 1
+)
+
+summary(boot_h2)
+```
+
+
+```{r}
+# 5.5 Testing for specific indirect effects
+# H2a: Traffic → Interactivity → GMV
+ind_H2a <- specific_effect_significance(
+  boot_seminr_model = boot_h2,
+  from   = "Traffic",
+  to     = "GMV",
+  through = "Interactivity",
+  alpha  = 0.05
+)
+ind_H2a
+
+# H2b: Traffic → Attractiveness → GMV
+ind_H2b <- specific_effect_significance(
+  boot_seminr_model = boot_h2,
+  from   = "Traffic",
+  to     = "GMV",
+  through = "Attractiveness",
+  alpha  = 0.05
+)
+ind_H2b
+
+# H2c: Traffic → Value → GMV
+ind_H2c <- specific_effect_significance(
+  boot_seminr_model = boot_h2,
+  from   = "Traffic",
+  to     = "GMV",
+  through = "Value",
+  alpha  = 0.05
+)
+ind_H2c
+```
+
+
+# Step 6. H3
+```{r}
+# 6.1 Measurement model & structural model for H3
+# NOTE: Value uses single indicator (AOV_mid_log) to avoid zero-variance issue in category subsamples
+mm_h3 <- constructs(
+  # Traffic
+  composite("Traffic",
+            c(single_item("Fans_count_log"),
+              single_item("Viewers_log"),
+              single_item("Exposure_log")),
+            weights = mode_B),
+
+  # Interactivity
+  composite("Interactivity",
+            c(single_item("Likes_log"),
+              single_item("Comments_log")),
+            weights = mode_B),
+
+  # Value 
+  composite("Value",
+            single_item("AOV_mid_log"),
+            weights = mode_A),
+
+  # GMV (single-item) 
+  composite("GMV",
+            single_item("GMV_mid_log"),
+            weights = mode_A)
+)
+
+# Structural model: Traffic -> (Interactivity, Value, GMV); mediators -> GMV
+sm_h3 <- relationships(
+  paths(from = "Traffic", to = c("Interactivity", "Value", "GMV")),
+  paths(from = c("Interactivity", "Value"), to = "GMV")
+)
+```
+
+
+
+```{r}
+# 6.2 Helper: extract bootstrapped summary tables
+extract_boot_tables <- function(boot_model){
+  s <- summary(boot_model)
+
+  paths_df <- as.data.frame(s$bootstrapped_paths) %>%
+    rownames_to_column("path")
+
+  total_paths_df <- as.data.frame(s$bootstrapped_total_paths) %>%
+    rownames_to_column("path")
+
+  list(paths = paths_df, total_paths = total_paths_df)
+}
+```
+
+
+
+```{r}
+# 6.3 Run H3 per category (PLS + bootstrap) and build "profile outputs"
+run_h3_profile_for_group <- function(data, group_name, nboot = 1000, alpha = 0.05) {
+
+  # 1) Subset data for one category 取该品类子样本
+  data_g <- data %>%
+    filter(Main_business_type == group_name) %>%
+    select(
+      Fans_count_log, Viewers_log, Exposure_log,
+      Likes_log, Comments_log,
+      AOV_mid_log,
+      GMV_mid_log
+    ) %>%
+    na.omit()
+
+  message("H3 group: ", group_name, " | n = ", nrow(data_g))
+  
+    # Within-group variance check: stop if any variable has zero variance
+  sd_check <- sapply(data_g, sd)
+  if(any(sd_check == 0)) {
+    print(sd_check)
+    stop(paste0("Zero variance detected in group: ", group_name,
+                ". Remove or replace the zero-variance variable(s) before PLS."))
+  }
+
+  # 2) Estimate PLS model
+  pls_g <- estimate_pls(
+    data = data_g,
+    measurement_model = mm_h3,
+    structural_model  = sm_h3
+  )
+
+  # 3) Bootstrap for significance & CI Bootstrap
+  boot_g <- bootstrap_model(
+    seminr_model = pls_g,
+    nboot = nboot,
+    cores = max(1, parallel::detectCores() - 1)
+  )
+
+  # 4) Direct paths & Total paths (from summary tables)
+  tab <- extract_boot_tables(boot_g)
+  direct_summary <- tab$paths
+  total_summary  <- tab$total_paths
+
+  # Extract total effect row: Traffic -> GMV
+  hit_total <- which(grepl("Traffic", total_summary$path) & grepl("GMV", total_summary$path))
+
+  total_effect_summary <- if (length(hit_total) >= 1) {
+    total_summary %>%
+      slice(hit_total[1]) %>%
+      transmute(
+        effect  = "Traffic -> GMV (Total Effect)",
+        est     = `Original Est.`,
+        sd      = `Bootstrap SD`,
+        t       = `T Stat.`,
+        ci_low  = `2.5% CI`,
+        ci_high = `97.5% CI`
+      )
+  } else {
+    data.frame(effect="Traffic -> GMV (Total Effect, not found)",
+               est=NA_real_, sd=NA_real_, t=NA_real_, ci_low=NA_real_, ci_high=NA_real_)
+  }
+
+  # 5) Specific indirect effects (two mediators)
+  ind_int <- specific_effect_significance(
+    boot_seminr_model = boot_g,
+    from = "Traffic", to = "GMV", through = "Interactivity", alpha = alpha
+  )
+
+  ind_val <- specific_effect_significance(
+    boot_seminr_model = boot_g,
+    from = "Traffic", to = "GMV", through = "Value", alpha = alpha
+  )
+
+  indirect_summary <- bind_rows(
+    data.frame(
+      effect  = "Traffic -> Interactivity -> GMV",
+      est     = as.numeric(ind_int["Original Est."]),
+      mean    = as.numeric(ind_int["Bootstrap Mean"]),
+      sd      = as.numeric(ind_int["Bootstrap SD"]),
+      t       = as.numeric(ind_int["T Stat."]),
+      ci_low  = as.numeric(ind_int["2.5% CI"]),
+      ci_high = as.numeric(ind_int["97.5% CI"])
+    ),
+    data.frame(
+      effect  = "Traffic -> Value -> GMV",
+      est     = as.numeric(ind_val["Original Est."]),
+      mean    = as.numeric(ind_val["Bootstrap Mean"]),
+      sd      = as.numeric(ind_val["Bootstrap SD"]),
+      t       = as.numeric(ind_val["T Stat."]),
+      ci_low  = as.numeric(ind_val["2.5% CI"]),
+      ci_high = as.numeric(ind_val["97.5% CI"])
+    )
+  )
+
+  # 6) Build within-category "importance ranking" for profiling
+  key_direct <- direct_summary %>%
+    filter(grepl("->\\s*GMV", path)) %>%
+    transmute(item = paste0("Direct: ", path), est = `Original Est.`)
+
+  key_indirect <- indirect_summary %>%
+    transmute(item = paste0("Indirect: ", effect), est = est)
+
+  key_total <- total_effect_summary %>%
+    transmute(item = effect, est = est)
+
+  importance_rank <- bind_rows(key_direct, key_indirect, key_total) %>%
+    mutate(abs_est = abs(est)) %>%
+    arrange(desc(abs_est)) %>%
+    mutate(rank = row_number())
+
+  list(
+    group_name = group_name,
+    n = nrow(data_g),
+    pls = pls_g,
+    boot = boot_g,
+    direct_summary = direct_summary,
+    indirect_summary = indirect_summary,
+    total_effect_summary = total_effect_summary,
+    importance_rank = importance_rank
+  )
+}
+```
+
+
+```{r}
+# 6.4 Run all categories
+groups <- c("Beauty & Skincare",
+            "Daily Necessities",
+            "Clothing",
+            "Maternal & Baby Products",
+            "Healthcare",
+            "Pet Products")
+
+group_profiles_h3 <- lapply(groups, function(g) run_h3_profile_for_group(df, g, nboot = 1000, alpha = 0.05))
+names(group_profiles_h3) <- groups
+```
+
+
+
+```{r}
+# 6.5 Combine results for writing & reporting
+direct_all <- bind_rows(lapply(group_profiles_h3, function(x) {
+  x$direct_summary %>% mutate(group = x$group_name, n = x$n)
+}))
+
+indirect_all <- bind_rows(lapply(group_profiles_h3, function(x) {
+  x$indirect_summary %>% mutate(group = x$group_name, n = x$n)
+}))
+
+total_all <- bind_rows(lapply(group_profiles_h3, function(x) {
+  x$total_effect_summary %>% mutate(group = x$group_name, n = x$n)
+}))
+
+importance_all <- bind_rows(lapply(group_profiles_h3, function(x) {
+  x$importance_rank %>% mutate(group = x$group_name, n = x$n)
+}))
+
+# Quick view: top drivers per category 
+importance_all %>%
+  group_by(group) %>%
+  slice_min(rank, n = 5) %>%
+  ungroup()
+```
+
+
+
